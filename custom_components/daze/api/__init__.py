@@ -14,6 +14,7 @@ from ..const import API_BASE_URL
 from .auth import (
     AuthError,
     DazeAuthClient,
+    RefreshTokenRejectedError,
     async_fetch_user,
     describe_get_user_error,
 )
@@ -37,10 +38,13 @@ COMMAND_RETRY_MAX_DELAY = 6.0
 
 
 class ApiAuthError(Exception):
-    """Raised when the API returns 401 after a token refresh attempt.
+    """Raised when Cognito refuses the refresh token.
 
     This signals that the refresh token itself is invalid/expired,
-    triggering the re-authentication flow in Home Assistant.
+    triggering the re-authentication flow in Home Assistant. It is
+    raised for nothing else: re-authentication stops the polling until
+    the user pastes new tokens, so a failure that new tokens would not
+    fix must stay an ApiError and be retried.
     """
 
 
@@ -199,8 +203,9 @@ class DazeApiClient:
         """Make an authenticated HTTP request with automatic token refresh.
 
         On the first 401 response, the access token is refreshed and the
-        request is retried once. If the retry also returns 401,
-        ApiAuthError is raised to trigger re-authentication.
+        request is retried once. ApiAuthError, which triggers
+        re-authentication, is raised only if Cognito refuses the refresh
+        token; a retry that still returns 401 is an ApiError.
 
         Args:
             method: HTTP method (GET, POST, etc.).
@@ -214,8 +219,10 @@ class DazeApiClient:
             Parsed JSON response body.
 
         Raises:
-            ApiAuthError: If token refresh fails or retry still 401s.
-            ApiError: For other HTTP errors or network failures.
+            ApiAuthError: If Cognito refuses the refresh token.
+            ApiError: For other HTTP errors or network failures,
+                including a refresh that could not be completed and a
+                retry that still returns 401.
 
         """
         headers = kwargs.pop("headers", {})
@@ -295,17 +302,33 @@ class DazeApiClient:
             Parsed JSON from the retried request.
 
         Raises:
-            ApiAuthError: If refresh fails or retry also 401s.
+            ApiAuthError: If Cognito refuses the refresh token.
+            ApiError: If the refresh could not be completed, or the
+                retry fails — including with another 401.
 
         """
         try:
             await self._auth.async_refresh_access_token(self._session)
-        except AuthError as err:
+        except RefreshTokenRejectedError as err:
             _LOGGER.warning(
                 "Token refresh failed — triggering re-auth: %s", err
             )
             raise ApiAuthError(
                 "Token refresh failed, re-authentication required"
+            ) from err
+        except AuthError as err:
+            # Cognito never said the refresh token was bad: the request
+            # did not get through, or it answered with a 5xx. Asking for
+            # new tokens would stop the polling for something the next
+            # poll is likely to get past on its own.
+            _LOGGER.warning(
+                "Token refresh did not complete on %s %s, will retry: %s",
+                method,
+                url,
+                err,
+            )
+            raise ApiError(
+                f"Token refresh did not complete on {method} {url}: {err}"
             ) from err
 
         # Retry with new token
@@ -319,18 +342,28 @@ class DazeApiClient:
                 method, url, headers=headers, **kwargs
             ) as response:
                 if response.status == 401:
-                    # Double 401 — refresh token is invalid
+                    # Double 401. This used to be read as "the refresh
+                    # token is invalid", but Cognito has just accepted
+                    # it and issued the token being refused here, so new
+                    # tokens from the user would be refused the same
+                    # way. Seen in the field as a one-off: the API
+                    # answered 401 twice, and the same stored tokens
+                    # worked again after a restart — by which time the
+                    # integration had been stopped for hours waiting
+                    # for a re-authentication nobody needed.
                     body = await response.text()
                     _LOGGER.warning(
-                        "Retry also returned 401 on %s %s: %s — "
-                        "refresh token is invalid",
+                        "Retry also returned 401 on %s %s: %s — the "
+                        "token was refreshed successfully, so this is "
+                        "treated as a temporary API failure",
                         method,
                         url,
                         body,
                     )
-                    raise ApiAuthError(
-                        "Authentication failed after token refresh, "
-                        "re-authentication required"
+                    raise ApiError(
+                        f"API {method} {url} still returned 401 after a "
+                        f"successful token refresh: {body}",
+                        status=401,
                     )
 
                 if response.status == 404:
@@ -388,6 +421,8 @@ class DazeApiClient:
         Raises:
             ApiAuthError: If the token is rejected and refreshing it
                 does not recover access.
+            ApiError: If the refresh could not be completed, which
+                says nothing about the tokens.
 
         """
         status, body = await async_fetch_user(
@@ -402,9 +437,13 @@ class DazeApiClient:
 
             try:
                 await self._auth.async_refresh_access_token(self._session)
-            except AuthError as err:
+            except RefreshTokenRejectedError as err:
                 raise ApiAuthError(
                     "Token refresh failed, re-authentication required"
+                ) from err
+            except AuthError as err:
+                raise ApiError(
+                    f"Token refresh did not complete: {err}"
                 ) from err
 
             status, body = await async_fetch_user(

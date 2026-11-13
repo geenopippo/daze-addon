@@ -8,6 +8,15 @@ This project was created by Andrea Restello at
 Some entries below include merged external bug-fix contributions unless
 otherwise noted.
 
+## [0.2.3.1] - 2026-11-13
+
+Only in [geenopippo/daze-addon](https://github.com/geenopippo/daze-addon);
+the original project is at 0.2.3.
+
+### Fixed
+
+- Stopped asking for re-authentication when the refresh token had not been refused. A token refresh that did not complete (a network error, a timeout, a 5xx from Cognito) and a 401 answered to an access token Cognito had just issued were both reported as an expired refresh token. Home Assistant then stopped polling until new tokens were pasted, although the stored ones still worked: after one such 401 the integration stayed down for ten hours and came back unchanged on the next restart. Both are now ordinary update failures, retried on the next poll. Re-authentication is requested only when Cognito answers the refresh with 400 or 401.
+
 ## [0.2.3] - 2026-10-04
 
 ### Fixed

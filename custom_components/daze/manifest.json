@@ -2,15 +2,15 @@
   "domain": "daze",
   "name": "Daze Wallbox Integration",
   "codeowners": [
-    "@arest"
+    "@geenopippo"
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/arest/daze-addon",
+  "documentation": "https://github.com/geenopippo/daze-addon",
   "integration_type": "device",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/arest/daze-addon/issues",
+  "issue_tracker": "https://github.com/geenopippo/daze-addon/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.2.3"
+  "version": "0.2.3.1"
 }

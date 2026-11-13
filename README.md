@@ -5,6 +5,8 @@
 [![HACS Validation](https://github.com/arest/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/arest/daze-addon/actions/workflows/validate.yaml)
 [![GitHub](https://img.shields.io/github/license/arest/daze-addon)](LICENSE)
 
+> **This is a personal copy** of [arest/daze-addon](https://github.com/arest/daze-addon), which is where the integration is developed. It differs in one thing: re-authentication is requested only when Cognito refuses the refresh token. A token refresh that fails for another reason, or a 401 answered to a freshly refreshed token, is retried on the next poll instead of stopping the integration until new tokens are pasted. See the [changelog](CHANGELOG.md). To install this copy, add `https://github.com/geenopippo/daze-addon` to HACS as a custom repository in place of the original.
+
 Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging metrics in real time and control your wallbox directly from your HA dashboard — no separate app required.
 
 Daze wallboxes are managed through the [Daze web portal](https://webportal.dazeservice.com). This integration bridges the gap, bringing your wallbox into Home Assistant alongside all your other smart home devices.

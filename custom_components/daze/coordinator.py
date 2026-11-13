@@ -424,9 +424,11 @@ class DazeDataUpdateCoordinator(
             key containing a list of ``RechargeSession`` objects.
 
         Raises:
-            ConfigEntryAuthFailed: If the 401 retry also fails (refresh
-                token expired) — triggers the HA re-auth flow.
-            UpdateFailed: For transient API or network errors.
+            ConfigEntryAuthFailed: If Cognito refuses the refresh token
+                — triggers the HA re-auth flow.
+            UpdateFailed: For transient API or network errors, which
+                include a token refresh that could not be completed and
+                a 401 answered to a freshly refreshed token.
 
         """
         self._total_updates += 1

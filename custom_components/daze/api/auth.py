@@ -26,6 +26,20 @@ class AuthError(Exception):
     """Raised when authentication fails (invalid/expired tokens, network error)."""
 
 
+class RefreshTokenRejectedError(AuthError):
+    """Raised when Cognito itself refuses the refresh token.
+
+    This is the one refresh failure that new tokens from the user can
+    fix, so it is the only one that should start re-authentication. A
+    refresh that fails for any other reason — the network, a timeout, a
+    5xx from Cognito — says nothing about the token and is worth trying
+    again on the next poll.
+
+    Subclasses AuthError so callers that do not care about the
+    difference keep working.
+    """
+
+
 async def async_fetch_user(
     session: ClientSession, access_token: str
 ) -> tuple[int, dict[str, Any]]:
@@ -197,8 +211,11 @@ class DazeAuthClient:
             The new access token string.
 
         Raises:
-            AuthError: If the refresh token is expired, invalid, or a
-                network error occurs.
+            RefreshTokenRejectedError: If Cognito answers that the
+                refresh token is expired, revoked or otherwise invalid.
+            AuthError: If the refresh could not be completed for any
+                other reason (network error, timeout, unexpected
+                status). The refresh token may still be good.
 
         """
         url = f"{COGNITO_BASE_URL}/oauth2/token"
@@ -225,14 +242,18 @@ class DazeAuthClient:
                         response.status,
                         body,
                     )
-                    raise AuthError(
+                    raise RefreshTokenRejectedError(
                         f"Token refresh failed with status {response.status}: "
                         f"{body}"
                     )
 
                 if response.status != 200:
+                    # Not an answer about the token: Cognito is
+                    # throttling or unwell. Logged as a warning because
+                    # the caller retries, and an error here would read
+                    # as something the user has to act on.
                     body = await response.text()
-                    _LOGGER.error(
+                    _LOGGER.warning(
                         "Unexpected token refresh response (HTTP %s): %s",
                         response.status,
                         body,
@@ -264,9 +285,14 @@ class DazeAuthClient:
 
         except AuthError:
             raise
-        except ClientError as err:
-            _LOGGER.warning("Network error during token refresh: %s", err)
-            raise AuthError(f"Network error during token refresh: {err}") from err
+        except (ClientError, TimeoutError) as err:
+            # TimeoutError is what aiohttp raises when the session
+            # timeout expires; it is not a ClientError.
+            detail = str(err) or type(err).__name__
+            _LOGGER.warning("Network error during token refresh: %s", detail)
+            raise AuthError(
+                f"Network error during token refresh: {detail}"
+            ) from err
 
     async def async_validate_tokens(
         self, session: ClientSession

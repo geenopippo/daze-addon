@@ -34,6 +34,7 @@ STANDALONE = (
     "test_no_device_identifiers.py",
     "test_translations.py",
     "test_auth_getuser.py",
+    "test_token_refresh.py",
     "test_payload.py",
     "test_qa_invariants.py",
     "test_entities.py",
