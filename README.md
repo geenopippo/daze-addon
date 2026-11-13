@@ -5,7 +5,7 @@
 [![HACS Validation](https://github.com/arest/daze-addon/actions/workflows/validate.yaml/badge.svg)](https://github.com/arest/daze-addon/actions/workflows/validate.yaml)
 [![GitHub](https://img.shields.io/github/license/arest/daze-addon)](LICENSE)
 
-> **This is a personal copy** of [arest/daze-addon](https://github.com/arest/daze-addon), which is where the integration is developed. It differs in one thing: re-authentication is requested only when Cognito refuses the refresh token. A token refresh that fails for another reason, or a 401 answered to a freshly refreshed token, is retried on the next poll instead of stopping the integration until new tokens are pasted. See the [changelog](CHANGELOG.md). To install this copy, add `https://github.com/geenopippo/daze-addon` to HACS as a custom repository in place of the original.
+> **This is a personal copy** of [arest/daze-addon](https://github.com/arest/daze-addon), which is where the integration is developed. It differs in two things. You can sign in with the **email address and password** of your Daze account instead of copying tokens out of the browser, and the integration then signs in again by itself when its tokens expire. And re-authentication is requested only when Cognito refuses the refresh token: a token refresh that fails for another reason, or a 401 answered to a freshly refreshed token, is retried on the next poll instead of stopping the integration. See the [changelog](CHANGELOG.md). To install this copy, add `https://github.com/geenopippo/daze-addon` to HACS as a custom repository in place of the original.
 
 Home Assistant integration for **Daze WallBox EV chargers**. Monitor charging metrics in real time and control your wallbox directly from your HA dashboard — no separate app required.
 
@@ -54,7 +54,34 @@ Daze wallboxes are managed through the [Daze web portal](https://webportal.dazes
 
 ## Configuration
 
+There are two ways to connect your Daze account, and setup asks which
+one to use.
+
+### Signing in with email and password
+
+Enter the email address and password you use at
+[webportal.dazeservice.com](https://webportal.dazeservice.com). The
+integration signs in on the same Daze page your browser would, and keeps
+the two tokens that page hands out.
+
+The email address and the password are stored in Home Assistant with the
+tokens. That is what lets the integration sign in again by itself when
+the refresh token eventually expires, instead of stopping and asking you
+for new tokens. If you change your Daze password, the integration asks
+for the new one the next time it has to sign in.
+
+To add the password to an integration that was set up with tokens, open
+**Settings → Devices & services → Daze Wallbox**, the three-dot menu of
+the entry, and **Reconfigure**.
+
+This does not work for an account that signs in to Daze with Google or
+Apple, which has no password, or one that needs a second step to sign
+in. Those use the tokens.
+
 ### Getting your tokens
+
+This is the other way, and the only one for accounts without a password.
+
 
 The Daze web portal does not show tokens anywhere in its UI, and there is
 no separate Daze developer console to sign in to. Signing in creates the
@@ -119,9 +146,11 @@ keeps the integration running without asking you to sign in again.
 
 1. Go to **Settings → Devices & services**
 2. Click **Add integration** and search for **Daze Wallbox**
-3. Enter your Daze **Access Token** and **Refresh Token** (see
+3. Choose **Email address and password** and enter them, or choose
+   **Paste the tokens from the browser** and enter your Daze **Access
+   Token** and **Refresh Token** (see
    [Getting your tokens](#getting-your-tokens) above)
-4. Click **Submit** — the integration validates your tokens
+4. Click **Submit** — the integration signs in, or validates your tokens
 5. Select your **network** (installation location) from the list
 6. Review the confirmation screen with your wallbox details
 7. Click **Submit** to complete setup
@@ -130,7 +159,9 @@ The wallbox should now appear as a single device with all sensors and controls g
 
 ### Re-authentication
 
-If your tokens expire, the integration will automatically prompt you to re-enter them through the HA UI. You'll see a notification and a re-authentication flow.
+With an email address and password stored, the integration signs in again by itself when its tokens expire, and you are asked only if that fails (a changed password, for instance).
+
+Set up with tokens only, it prompts you through the HA UI when they expire: you'll see a notification and a re-authentication flow, which offers both ways to sign in.
 
 ---
 
@@ -498,8 +529,9 @@ note below on readings the API does not report.
 ## Data & privacy
 
 - All data flows through the Daze cloud API — no local/offline control
-- The integration stores only your access token and refresh token, in the Home Assistant config entry. As with every integration, that means plain text in `.storage/core.config_entries` — Home Assistant does not encrypt config entry storage. Treat your configuration directory and your backups as holding live credentials.
-- The stored tokens are the ones you entered at setup, or at your last re-authentication. Refreshing an access token updates it in memory only and never writes it back, so what is on disk does not rotate on its own. Two things follow: an old backup can still hold a usable refresh token, and every restart begins again from the tokens stored at setup — which is why an integration that has been running for weeks can still ask you to re-authenticate after a restart.
+- The integration stores your access token and refresh token in the Home Assistant config entry, and your Daze email address and password as well if you signed in with them. As with every integration, that means plain text in `.storage/core.config_entries` — Home Assistant does not encrypt config entry storage. Treat your configuration directory and your backups as holding live credentials.
+- The password is sent only to the Daze sign-in page (`daze.auth.eu-central-1.amazoncognito.com`), when signing in. It is not written to the log or to the diagnostics, which say only whether one is stored.
+- The stored tokens are replaced when the refresh token changes: when the integration signs in again by itself, or when Cognito hands out a new refresh token. The hourly refresh of the access token is kept in memory only, so most of the time what is on disk is the pair from the last sign-in, and an old backup can still hold a usable refresh token.
 - No data is sent to third parties beyond the Daze API
 
 ---

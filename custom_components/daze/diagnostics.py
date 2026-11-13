@@ -52,6 +52,9 @@ async def async_get_config_entry_diagnostics(
         "auth": {
             "issuer": COGNITO_BASE_URL,
             "token_expired": auth_client.is_token_expired(),
+            # Whether an email address and password are stored, never
+            # what they are.
+            "signs_in_by_itself": auth_client.has_credentials,
             "token_expiry_timestamp": auth_client.token_expiry,
             "token_age_seconds": (
                 now - (auth_client.token_expiry - 3600)

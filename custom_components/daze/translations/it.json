@@ -3,6 +3,23 @@
     "title": "Daze Wallbox",
     "step": {
       "user": {
+        "title": "Daze Wallbox",
+        "description": "Scegli come collegare il tuo account Daze.",
+        "menu_options": {
+          "credentials": "Email e password",
+          "tokens": "Incolla i token dal browser"
+        }
+      },
+      "credentials": {
+        "title": "Accedi a Daze",
+        "description": "Inserisci l'email e la password che usi su webportal.dazeservice.com. Vengono salvate in Home Assistant, così l'integrazione rifà l'accesso da sola quando i token scadono.\n\nSe accedi a Daze con Google o Apple non hai una password da inserire qui: usa i token.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "tokens": {
+        "title": "Token di Daze",
         "data": {
           "access_token": "Token di accesso",
           "refresh_token": "Token di aggiornamento"
@@ -25,11 +42,16 @@
       "network_error": "Impossibile connettersi all'API Daze. Verifica la connessione internet e riprova.",
       "no_networks": "Nessuna rete trovata per questo account.",
       "no_evses": "Nessuna wallbox trovata nella rete selezionata.",
-      "unknown": "Si è verificato un errore imprevisto. Riprova."
+      "unknown": "Si è verificato un errore imprevisto. Riprova.",
+      "invalid_auth": "Daze non ha accettato questa email e questa password.",
+      "login_not_supported": "Per accedere a questo account serve un passaggio da fare nel browser (un codice di verifica, una nuova password). Usa i token.",
+      "login_failed": "Non sono riuscito a completare l'accesso sulla pagina di Daze. Riprova tra qualche minuto, oppure usa i token.",
+      "wrong_account": "Questo account non vede l'installazione con cui è stata configurata questa wallbox."
     },
     "abort": {
       "already_configured": "Questa wallbox è già configurata.",
-      "reauth_successful": "Re-autenticazione completata con successo."
+      "reauth_successful": "Re-autenticazione completata con successo.",
+      "reconfigure_successful": "I nuovi dati di accesso sono stati salvati."
     }
   },
   "reauth": {

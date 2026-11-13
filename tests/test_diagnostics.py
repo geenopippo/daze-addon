@@ -109,10 +109,21 @@ FAKE_REFRESH_TOKEN = "eyJjdHkiOiJKV1QifQ.FAKEREFRESHTOKENFORTESTS.1111"
 class FakeAuthClient:
     """Carries tokens, as the real one does."""
 
-    def __init__(self, token_expiry: float | None = 1_000_000.0) -> None:
+    def __init__(
+        self,
+        token_expiry: float | None = 1_000_000.0,
+        password: str | None = None,
+    ) -> None:
         self._access_token = FAKE_ACCESS_TOKEN
         self._refresh_token = FAKE_REFRESH_TOKEN
         self.token_expiry = token_expiry
+        self._username = "driver@example.invalid" if password else None
+        self._password = password
+
+    @property
+    def has_credentials(self) -> bool:
+        """Return whether an email address and password are stored."""
+        return bool(self._username and self._password)
 
     @property
     def access_token(self) -> str:
@@ -222,6 +233,24 @@ def test_no_token_reaches_the_diagnostics_output() -> None:
 
     assert FAKE_ACCESS_TOKEN not in blob, "access token leaked"
     assert FAKE_REFRESH_TOKEN not in blob, "refresh token leaked"
+
+
+def test_a_stored_password_is_reported_as_present_and_nothing_more() -> None:
+    """Whether the integration can sign in by itself is worth knowing.
+
+    The email address and the password that make it possible are not:
+    the same public issue would carry the account.
+    """
+    coordinator = FakeCoordinator(
+        auth_client=FakeAuthClient(password="FAKE-password-for-tests")
+    )
+    result = _run(coordinator)
+    blob = json.dumps(result, default=str)
+
+    assert result["auth"]["signs_in_by_itself"] is True
+    assert "FAKE-password-for-tests" not in blob, "password leaked"
+    assert "driver@example.invalid" not in blob, "email address leaked"
+    assert _run()["auth"]["signs_in_by_itself"] is False
 
 
 def test_no_token_shaped_string_reaches_the_output() -> None:

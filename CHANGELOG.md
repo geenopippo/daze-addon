@@ -8,6 +8,22 @@ This project was created by Andrea Restello at
 Some entries below include merged external bug-fix contributions unless
 otherwise noted.
 
+## [0.2.3.2] - 2026-11-13
+
+Only in [geenopippo/daze-addon](https://github.com/geenopippo/daze-addon);
+the original project is at 0.2.3.
+
+### Added
+
+- Signing in with the email address and password of the Daze account. Setup and re-authentication now ask how to sign in: with the email address and password, or with tokens pasted from the browser as before. The integration signs in on the Daze sign-in page the way the web portal does and keeps the tokens it hands out.
+- Signing in again by itself. With the email address and password stored, a refresh token Cognito refuses no longer stops the integration: it signs in again and carries on. A refused password is never sent a second time, and an attempt that could not be completed is repeated at most five times, five minutes apart at first and doubling, before the user is asked.
+- "Reconfigure" on the integration, to give an entry set up with tokens the email address and password without waiting for the tokens to expire.
+
+### Changed
+
+- A new refresh token is written back to the config entry: after signing in again, and when Cognito rotates it. Until now the entry kept the tokens entered at setup for good, so a restart always began from those.
+- Storing new tokens no longer reloads the integration. The auth client already holds them, and the reload would tear down the coordinator in the middle of the request that obtained them.
+
 ## [0.2.3.1] - 2026-11-13
 
 Only in [geenopippo/daze-addon](https://github.com/geenopippo/daze-addon);

@@ -3,6 +3,23 @@
   "config": {
     "step": {
       "user": {
+        "title": "Daze Wallbox",
+        "description": "Choose how to connect your Daze account.",
+        "menu_options": {
+          "credentials": "Email address and password",
+          "tokens": "Paste the tokens from the browser"
+        }
+      },
+      "credentials": {
+        "title": "Sign in to Daze",
+        "description": "Enter the email address and password you use at webportal.dazeservice.com. They are stored in Home Assistant, so the integration can sign in again by itself when its tokens expire.\n\nAccounts that sign in with Google or Apple have no password to enter here: use the tokens instead.",
+        "data": {
+          "username": "Email address",
+          "password": "Password"
+        }
+      },
+      "tokens": {
+        "title": "Daze tokens",
         "data": {
           "access_token": "Access Token",
           "refresh_token": "Refresh Token"
@@ -28,11 +45,16 @@
       "network_error": "Could not connect to the Daze API. Please check your internet connection and try again.",
       "no_networks": "No networks found for this account.",
       "no_evses": "No wallbox found in the selected network.",
-      "unknown": "An unexpected error occurred. Please try again."
+      "unknown": "An unexpected error occurred. Please try again.",
+      "invalid_auth": "Daze did not accept this email address and password.",
+      "login_not_supported": "Signing in to this account needs a step that has to be done in a browser (a verification code, a new password). Use the tokens instead.",
+      "login_failed": "Could not complete the sign-in on the Daze page. Try again in a few minutes, or use the tokens.",
+      "wrong_account": "This account cannot see the installation this wallbox was set up with."
     },
     "abort": {
       "already_configured": "This wallbox is already configured.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "The new sign-in details were saved."
     }
   },
   "services": {

@@ -559,6 +559,58 @@ def test_reload_signature_ignores_only_the_solar_reserve() -> None:
     )
 
 
+def test_new_tokens_alone_do_not_alter_the_reload_signature() -> None:
+    """The auth client stores a new refresh token while it is running.
+
+    It writes the token it already holds, after signing in again by
+    itself or when Cognito rotates it. A reload at that moment would
+    tear the coordinator down in the middle of the request that
+    obtained the token, to rebuild it with the same one.
+    """
+    entry = FakeEntry(
+        data={
+            const.CONF_ACCESS_TOKEN: "a",
+            const.CONF_REFRESH_TOKEN: "r",
+            const.CONF_SERIAL_NUMBER: "SER1",
+        },
+        options={"poll_interval": 30},
+    )
+
+    before = daze_init._reload_signature(entry)
+
+    entry.data[const.CONF_ACCESS_TOKEN] = "a2"
+    entry.data[const.CONF_REFRESH_TOKEN] = "r2"
+    assert daze_init._reload_signature(entry) == before, (
+        "storing new tokens altered the reload signature"
+    )
+
+    entry.data[const.CONF_SERIAL_NUMBER] = "SER2"
+    assert daze_init._reload_signature(entry) != before, (
+        "a different charger must still alter the reload signature"
+    )
+
+
+def test_storing_new_tokens_does_not_reload_the_entry() -> None:
+    """The same, through the listener Home Assistant actually calls."""
+    entry = FakeEntry(
+        data={const.CONF_ACCESS_TOKEN: "a", const.CONF_REFRESH_TOKEN: "r"},
+        options={"poll_interval": 30},
+    )
+    hass = FakeHass()
+    hass.data[DOMAIN] = {
+        entry.entry_id: {
+            "reload_signature": daze_init._reload_signature(entry),
+        }
+    }
+
+    entry.data[const.CONF_REFRESH_TOKEN] = "r2"
+    asyncio.run(daze_init._async_update_listener(hass, entry))
+
+    assert hass.config_entries.reload_calls == [], (
+        "storing a new refresh token reloaded the integration"
+    )
+
+
 def test_neither_solar_timer_alters_the_reload_signature() -> None:
     """Both are applied live, so neither may force a rebuild.
 

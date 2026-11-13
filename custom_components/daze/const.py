@@ -22,11 +22,30 @@ GET_USER_CONTENT_TYPE = "application/x-amz-json-1.1"
 CLIENT_ID = "4m0rp7oqarbrc3hn67ivvonba8"
 REDIRECT_URI = "https://webportal.dazeservice.com/authentication/callback"
 
+# Signing in with an email address and a password goes through the same
+# Cognito pages as the web portal: these are the scopes it asks for and
+# the address it is redirected back to. REDIRECT_URI above is the one
+# the token refresh has always sent, where Cognito does not check it.
+OAUTH_SCOPE = "openid profile email daze.api/daze.api"
+LOGIN_REDIRECT_URI = "https://webportal.dazeservice.com/signin-oidc"
+
+# After a sign-in attempt that could not be completed, how long to wait
+# before the next one, doubling each time, and how many before giving
+# up and asking the user. A refused password is never retried.
+LOGIN_RETRY_SECONDS = 300
+LOGIN_RETRY_MAX_SECONDS = 3600
+LOGIN_MAX_ATTEMPTS = 5
+
 # Config entry keys
 CONF_ACCESS_TOKEN = "access_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_TOKEN_EXPIRY = "token_expiry"
 CONF_EMAIL = "email"
+# Optional: the email address and password of the Daze account, kept so
+# the integration can sign in again by itself when the refresh token
+# expires. Absent on entries set up with pasted tokens.
+CONF_USERNAME = "username"
+CONF_PASSWORD = "password"
 CONF_NETWORK_UID = "network_uid"
 CONF_NETWORK_NAME = "network_name"
 CONF_EVSE_NAME = "evse_name"

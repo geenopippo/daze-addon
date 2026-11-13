@@ -306,7 +306,9 @@ EVSE_RECORD: dict[str, Any] = {
 class FakeAuthClient:
     """An auth client whose token validation does what a test says."""
 
-    def __init__(self, access_token: str, refresh_token: str) -> None:
+    def __init__(
+        self, access_token: str, refresh_token: str, **kwargs: Any
+    ) -> None:
         self.access_token = access_token
         self.refresh_token = refresh_token
 
@@ -328,10 +330,37 @@ class FakeApiClient:
         return {"email": "someone@example.com"}
 
     async def async_get_networks(self, email: str) -> list[dict[str, Any]]:
-        return [{"uid": "net-1", "name": "Home"}]
+        return [dict(network) for network in FakeApiClient.networks]
+
+    networks: ClassVar[list[dict[str, Any]]] = [
+        {"uid": "net-1", "name": "Home"}
+    ]
 
     async def async_get_evses(self, network_uid: str) -> list[dict[str, Any]]:
         return [dict(EVSE_RECORD)]
+
+
+class FakeLogin:
+    """Stands in for signing in on the Daze page.
+
+    Returns the tokens of a new session, or raises what a test says
+    the page answered.
+    """
+
+    TOKENS: ClassVar[dict[str, Any]] = {
+        "access_token": "signed-in-access",
+        "refresh_token": "signed-in-refresh",
+        "expires_in": 3600,
+    }
+    result: ClassVar[Any] = None
+    calls: ClassVar[list[tuple[str, str]]] = []
+
+    @staticmethod
+    async def login(session: Any, email: str, password: str) -> dict[str, Any]:
+        FakeLogin.calls.append((email, password))
+        if isinstance(FakeLogin.result, Exception):
+            raise FakeLogin.result
+        return dict(FakeLogin.result)
 
 
 class FakeConfigEntries:
@@ -370,6 +399,8 @@ class ExistingEntry:
         self.data: dict[str, Any] = {
             const.CONF_ACCESS_TOKEN: "old-access",
             const.CONF_REFRESH_TOKEN: "old-refresh",
+            const.CONF_EMAIL: "someone@example.com",
+            const.CONF_NETWORK_UID: "net-1",
             const.CONF_SERIAL_NUMBER: "SER1",
         }
         self.options: dict[str, Any] = {}
@@ -378,6 +409,9 @@ class ExistingEntry:
 def _reauth_flow() -> tuple[Any, Any, Any]:
     """Build a config flow already in a re-authentication."""
     FakeAuthClient.result = None
+    FakeApiClient.networks = [{"uid": "net-1", "name": "Home"}]
+    FakeLogin.result = dict(FakeLogin.TOKENS)
+    FakeLogin.calls = []
 
     flow = config_flow.DazeConfigFlow()
     hass = FakeHass()
@@ -414,12 +448,24 @@ def _reauth_flow() -> tuple[Any, Any, Any]:
         flow.forms.append(step_id)
         return {"type": "form", "step_id": step_id, **kwargs}
 
+    def _show_menu(
+        *, step_id: str, menu_options: list[str], **kwargs: Any
+    ) -> dict[str, Any]:
+        flow.forms.append(step_id)
+        return {
+            "type": "menu",
+            "step_id": step_id,
+            "menu_options": list(menu_options),
+        }
+
     flow.async_create_entry = _create_entry
     flow.async_abort = _abort
     flow.async_show_form = _show_form
+    flow.async_show_menu = _show_menu
 
     config_flow.DazeAuthClient = FakeAuthClient
     config_flow.DazeApiClient = FakeApiClient
+    config_flow.async_login = FakeLogin.login
 
     return flow, hass, entry
 
@@ -441,7 +487,7 @@ def _complete_reauth(
     token form observes none of that.
     """
     result = _run(
-        flow.async_step_user(
+        flow.async_step_tokens(
             {
                 const.CONF_ACCESS_TOKEN: access_token,
                 const.CONF_REFRESH_TOKEN: refresh_token,
@@ -475,15 +521,32 @@ def test_reauth_picks_up_the_entry_it_was_started_for() -> None:
     )
 
 
-def test_reauth_asks_for_tokens_again() -> None:
-    """Re-auth starts at the token form, not at network selection."""
+def test_reauth_asks_how_to_sign_in_again() -> None:
+    """Re-auth starts by offering both ways in, not at network selection.
+
+    The password first: it is the one that keeps the integration from
+    coming back here the next time the tokens expire.
+    """
     flow, _hass, _entry = _reauth_flow()
 
     result = _run(flow.async_step_reauth())
 
+    assert result["type"] == "menu"
     assert result["step_id"] == "user", (
         f"re-auth opened the {result.get('step_id')!r} step"
     )
+    assert result["menu_options"] == ["credentials", "tokens"]
+
+
+def test_the_token_form_is_still_there() -> None:
+    """Accounts with no password have nothing else to sign in with."""
+    flow, _hass, _entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+
+    result = _run(flow.async_step_tokens())
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "tokens"
 
 
 def test_reauth_updates_the_existing_entry_rather_than_adding_one() -> None:
@@ -549,11 +612,176 @@ def test_reauth_with_still_invalid_tokens_stays_on_the_form() -> None:
 
     result = _complete_reauth(flow, "also-expired", "also-expired")
 
-    assert result["step_id"] == "user"
+    assert result["step_id"] == "tokens"
     assert result["errors"]["base"] == "invalid_token"
     assert hass.config_entries.updated == [], (
         "a rejected token was written over the stored one"
     )
+
+
+def test_reauth_with_tokens_forgets_a_password_stored_before() -> None:
+    """Pasted tokens replace a sign-in that no longer works.
+
+    Keeping the old password next to them would have the integration
+    try it again the next time the tokens expire, which is one more
+    failed sign-in against the account for nothing.
+    """
+    flow, hass, entry = _reauth_flow()
+    entry.data[const.CONF_USERNAME] = "someone@example.com"
+    entry.data[const.CONF_PASSWORD] = "the-old-password"
+    _run(flow.async_step_reauth())
+
+    _complete_reauth(flow)
+
+    _updated_entry, data = hass.config_entries.updated[0]
+    assert const.CONF_PASSWORD not in data
+    assert const.CONF_USERNAME not in data
+
+
+# ------------------------------------------------------------------
+# Email address and password
+# ------------------------------------------------------------------
+
+
+def _sign_in(flow: Any, password: str = "correct horse") -> Any:
+    return _run(
+        flow.async_step_credentials(
+            {
+                const.CONF_USERNAME: " someone@example.com ",
+                const.CONF_PASSWORD: password,
+            }
+        )
+    )
+
+
+def test_reauth_with_a_password_updates_the_entry_in_one_step() -> None:
+    """Signing in again does not change which charger the entry is for.
+
+    So nothing else is asked: the tokens of the new session and the
+    credentials go into the existing entry, which keeps everything it
+    already had.
+    """
+    flow, hass, entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+
+    result = _sign_in(flow)
+
+    assert result == {"type": "abort", "reason": "reauth_successful"}
+    assert flow.created == [], "signing in again created a second entry"
+    assert FakeLogin.calls == [("someone@example.com", "correct horse")], (
+        "the email address was not stripped before signing in"
+    )
+
+    _updated_entry, data = hass.config_entries.updated[0]
+    assert data[const.CONF_ACCESS_TOKEN] == "signed-in-access"
+    assert data[const.CONF_REFRESH_TOKEN] == "signed-in-refresh"
+    assert data[const.CONF_USERNAME] == "someone@example.com"
+    assert data[const.CONF_PASSWORD] == "correct horse"
+    assert data[const.CONF_SERIAL_NUMBER] == "SER1", (
+        "the charger the entry is for was lost"
+    )
+    assert data[const.CONF_NETWORK_UID] == "net-1"
+    assert hass.config_entries.reloaded == [entry.entry_id]
+
+
+def test_a_refused_password_stays_on_the_form_and_changes_nothing() -> None:
+    """The likely mistake, and the one that must not cost the entry."""
+    flow, hass, _entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+    FakeLogin.result = config_flow.InvalidCredentialsError("refused")
+
+    result = _sign_in(flow, "wrong")
+
+    assert result["step_id"] == "credentials"
+    assert result["errors"]["base"] == "invalid_auth"
+    assert hass.config_entries.updated == []
+    assert hass.config_entries.reloaded == []
+
+
+def test_the_other_sign_in_failures_say_what_to_do() -> None:
+    """A second factor and a page that did not answer are not a typo.
+
+    Each gets its own message, because each has a different remedy:
+    use the tokens, or try again later.
+    """
+    for failure, key in (
+        (config_flow.LoginNotSupportedError("code"), "login_not_supported"),
+        (config_flow.LoginError("timeout"), "login_failed"),
+    ):
+        flow, hass, _entry = _reauth_flow()
+        _run(flow.async_step_reauth())
+        FakeLogin.result = failure
+
+        result = _sign_in(flow)
+
+        assert result["errors"]["base"] == key, key
+        assert hass.config_entries.updated == [], key
+
+
+def test_signing_in_to_another_account_is_refused() -> None:
+    """A different Daze account cannot see this entry's charger.
+
+    Saved, it would reload cleanly and then fail on every poll, with
+    the entry looking correctly set up.
+    """
+    flow, hass, _entry = _reauth_flow()
+    _run(flow.async_step_reauth())
+    FakeApiClient.networks = [{"uid": "someone-elses", "name": "Elsewhere"}]
+
+    result = _sign_in(flow)
+
+    assert result["step_id"] == "credentials"
+    assert result["errors"]["base"] == "wrong_account"
+    assert hass.config_entries.updated == []
+
+
+def test_reconfigure_goes_straight_to_the_password() -> None:
+    """The way in for an entry set up with pasted tokens.
+
+    It must not have to wait for those tokens to expire before it can
+    be told the password.
+    """
+    flow, hass, entry = _reauth_flow()
+    flow.context = {"entry_id": entry.entry_id, "source": "reconfigure"}
+
+    form = _run(flow.async_step_reconfigure())
+
+    assert form["type"] == "form"
+    assert form["step_id"] == "credentials"
+
+    result = _sign_in(flow)
+
+    assert result == {"type": "abort", "reason": "reconfigure_successful"}
+    _updated_entry, data = hass.config_entries.updated[0]
+    assert data[const.CONF_PASSWORD] == "correct horse"
+    assert hass.config_entries.reloaded == [entry.entry_id]
+
+
+def test_a_new_setup_with_a_password_stores_it_with_the_charger() -> None:
+    """A first setup goes on to pick the network and the charger.
+
+    The credentials have to survive those two steps and reach the
+    entry, or the integration could sign in once and never again.
+    """
+    flow, _hass, _entry = _reauth_flow()
+    flow.context = {"source": "user"}
+    flow._abort_if_unique_id_configured = lambda: None
+
+    menu = _run(flow.async_step_user())
+    assert menu["type"] == "menu"
+
+    result = _sign_in(flow)
+    assert result["step_id"] == "network"
+
+    _run(flow.async_step_network({const.CONF_NETWORK_UID: "net-1"}))
+    _run(flow.async_step_confirm({const.CONF_EVSE_NAME: "Daze HomeTT"}))
+
+    assert len(flow.created) == 1
+    data = flow.created[0]["data"]
+    assert data[const.CONF_USERNAME] == "someone@example.com"
+    assert data[const.CONF_PASSWORD] == "correct horse"
+    assert data[const.CONF_REFRESH_TOKEN] == "signed-in-refresh"
+    assert data[const.CONF_SERIAL_NUMBER] == "SER1"
 
 
 def test_reauth_strips_a_pasted_token_before_validating_it() -> None:

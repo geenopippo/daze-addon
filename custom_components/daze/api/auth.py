@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import ClientSession
@@ -16,7 +17,16 @@ from ..const import (
     DEFAULT_TOKEN_EXPIRY_BUFFER,
     GET_USER_CONTENT_TYPE,
     GET_USER_TARGET,
+    LOGIN_MAX_ATTEMPTS,
+    LOGIN_RETRY_MAX_SECONDS,
+    LOGIN_RETRY_SECONDS,
     REDIRECT_URI,
+)
+from .login import (
+    InvalidCredentialsError,
+    LoginError,
+    LoginNotSupportedError,
+    async_login,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,6 +171,10 @@ class DazeAuthClient:
 
     Stores the access and refresh tokens, checks expiry, performs token
     refresh, and validates tokens against the Cognito userInfo endpoint.
+
+    Given the email address and password of the account as well, it
+    signs in again by itself when Cognito refuses the refresh token,
+    which is otherwise the moment the user has to paste new tokens.
     """
 
     def __init__(
@@ -168,6 +182,10 @@ class DazeAuthClient:
         access_token: str,
         refresh_token: str,
         token_expiry: float | None = None,
+        *,
+        username: str | None = None,
+        password: str | None = None,
+        on_tokens: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Initialise the auth client.
 
@@ -175,11 +193,24 @@ class DazeAuthClient:
             access_token: The Cognito access token (Bearer token).
             refresh_token: The Cognito refresh token.
             token_expiry: Optional UNIX timestamp of the access token expiry.
+            username: Optional email address of the Daze account.
+            password: Optional password of the Daze account.
+            on_tokens: Optional callback, called with the new tokens
+                whenever the refresh token changes (a sign-in, or
+                Cognito rotating it) so the caller can store them.
 
         """
         self._access_token = access_token
         self._refresh_token = refresh_token
         self._token_expiry = token_expiry
+        self._username = username
+        self._password = password
+        self._on_tokens = on_tokens
+        # Bookkeeping for signing in again after a refused refresh.
+        self._refresh_refused = False
+        self._credentials_refused = False
+        self._login_failures = 0
+        self._next_login_at = 0.0
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -188,6 +219,129 @@ class DazeAuthClient:
     def get_headers(self) -> dict[str, str]:
         """Return the authorisation header dict for API calls."""
         return {"authorization": f"Bearer {self._access_token}"}
+
+    @property
+    def has_credentials(self) -> bool:
+        """Return True if an email address and a password are stored."""
+        return bool(self._username and self._password)
+
+    def _store(self, payload: dict[str, Any]) -> None:
+        """Take the tokens of a refresh or a sign-in.
+
+        The caller is told only when the refresh token changes: that is
+        the one worth writing down, since the access token is replaced
+        every hour and can always be had again from it.
+        """
+        self._access_token = payload["access_token"]
+        self._token_expiry = time.time() + payload.get("expires_in", 3600)
+
+        refresh_token = payload.get("refresh_token")
+        if refresh_token and refresh_token != self._refresh_token:
+            self._refresh_token = refresh_token
+            if self._on_tokens is not None:
+                self._on_tokens(self.async_get_tokens_for_store())
+
+    async def async_login(self, session: ClientSession) -> str:
+        """Sign in with the stored email address and password.
+
+        Args:
+            session: An aiohttp ClientSession to use for the requests.
+
+        Returns:
+            The new access token string.
+
+        Raises:
+            InvalidCredentialsError: If Cognito refuses the credentials.
+            LoginNotSupportedError: If signing in needs a step that only
+                a person in a browser can perform.
+            LoginError: If no credentials are stored, or the attempt
+                could not be completed.
+
+        """
+        if not self.has_credentials:
+            raise LoginError("No email address and password are stored")
+
+        payload = await async_login(
+            session,
+            self._username,  # type: ignore[arg-type]
+            self._password,  # type: ignore[arg-type]
+        )
+        self._store(payload)
+        self._refresh_refused = False
+        self._credentials_refused = False
+        self._login_failures = 0
+        self._next_login_at = 0.0
+        return self._access_token
+
+    async def _async_login_after_refusal(
+        self, session: ClientSession, refusal: RefreshTokenRejectedError
+    ) -> str:
+        """Sign in again because Cognito refused the refresh token.
+
+        A refused password is never tried a second time, and an attempt
+        that could not be completed is repeated a few times with a
+        growing wait: the alternative is a failed sign-in against the
+        user's account every poll.
+
+        Args:
+            session: An aiohttp ClientSession to use for the requests.
+            refusal: The rejection that brought us here, raised again
+                when signing in cannot fix it.
+
+        Returns:
+            The new access token string.
+
+        Raises:
+            RefreshTokenRejectedError: If signing in is not possible or
+                was refused: the user has to act.
+            AuthError: If the attempt could not be completed and will
+                be made again later.
+
+        """
+        if self._credentials_refused:
+            raise refusal
+
+        try:
+            access_token = await self.async_login(session)
+        except (InvalidCredentialsError, LoginNotSupportedError) as err:
+            self._credentials_refused = True
+            _LOGGER.warning(
+                "Daze did not accept the stored email address and "
+                "password: %s",
+                err,
+            )
+            raise refusal from err
+        except LoginError as err:
+            self._login_failures += 1
+            if self._login_failures >= LOGIN_MAX_ATTEMPTS:
+                self._credentials_refused = True
+                _LOGGER.warning(
+                    "Signing in to Daze failed %d times, giving up: %s",
+                    self._login_failures,
+                    err,
+                )
+                raise refusal from err
+
+            wait = min(
+                LOGIN_RETRY_SECONDS * 2 ** (self._login_failures - 1),
+                LOGIN_RETRY_MAX_SECONDS,
+            )
+            self._next_login_at = time.time() + wait
+            _LOGGER.warning(
+                "Signing in to Daze did not complete, next attempt in "
+                "%d minutes: %s",
+                wait // 60,
+                err,
+            )
+            raise AuthError(
+                f"Signing in to Daze did not complete: {err}"
+            ) from err
+
+        _LOGGER.info(
+            "The Daze refresh token had expired: signed in again with "
+            "the stored email address and password"
+        )
+        return access_token
 
     def is_token_expired(self) -> bool:
         """Return True if the access token is expired or near expiry.
@@ -212,12 +366,22 @@ class DazeAuthClient:
 
         Raises:
             RefreshTokenRejectedError: If Cognito answers that the
-                refresh token is expired, revoked or otherwise invalid.
+                refresh token is expired, revoked or otherwise invalid,
+                and signing in again with a stored email address and
+                password is not possible or was refused too.
             AuthError: If the refresh could not be completed for any
                 other reason (network error, timeout, unexpected
                 status). The refresh token may still be good.
 
         """
+        if self._refresh_refused and time.time() < self._next_login_at:
+            # The refresh token is known to be refused and the last
+            # attempt to sign in again did not complete: wait before
+            # asking Cognito anything else.
+            raise AuthError(
+                "Signing in to Daze again is postponed after a failed attempt"
+            )
+
         url = f"{COGNITO_BASE_URL}/oauth2/token"
         data = {
             "client_id": CLIENT_ID,
@@ -231,28 +395,32 @@ class DazeAuthClient:
 
         _LOGGER.debug("Refreshing access token via Cognito")
 
+        refusal: RefreshTokenRejectedError
+
         try:
             async with session.post(
                 url, headers=headers, data=data
             ) as response:
-                if response.status in (400, 401):
-                    body = await response.text()
-                    _LOGGER.warning(
-                        "Token refresh failed (HTTP %s): %s",
-                        response.status,
-                        body,
-                    )
-                    raise RefreshTokenRejectedError(
-                        f"Token refresh failed with status {response.status}: "
-                        f"{body}"
+                if response.status == 200:
+                    payload: dict[str, Any] = await response.json()
+                    self._refresh_refused = False
+                    self._store(payload)
+
+                    _LOGGER.debug(
+                        "Access token refreshed successfully "
+                        "(expires in %ss)",
+                        payload.get("expires_in", 3600),
                     )
 
-                if response.status != 200:
+                    return self._access_token
+
+                body = await response.text()
+
+                if response.status not in (400, 401):
                     # Not an answer about the token: Cognito is
                     # throttling or unwell. Logged as a warning because
                     # the caller retries, and an error here would read
                     # as something the user has to act on.
-                    body = await response.text()
                     _LOGGER.warning(
                         "Unexpected token refresh response (HTTP %s): %s",
                         response.status,
@@ -263,25 +431,15 @@ class DazeAuthClient:
                         f"{body}"
                     )
 
-                payload: dict[str, Any] = await response.json()
-                new_access_token: str = payload["access_token"]
-                expires_in: int = payload.get("expires_in", 3600)
-
-                # Update stored tokens
-                self._access_token = new_access_token
-                self._token_expiry = time.time() + expires_in
-
-                # Cognito may rotate the refresh token (rare)
-                if "refresh_token" in payload:
-                    self._refresh_token = payload["refresh_token"]
-
-                _LOGGER.debug(
-                    "Access token refreshed successfully "
-                    "(expires in %ss)",
-                    expires_in,
+                _LOGGER.warning(
+                    "Token refresh failed (HTTP %s): %s",
+                    response.status,
+                    body,
                 )
-
-                return new_access_token
+                refusal = RefreshTokenRejectedError(
+                    f"Token refresh failed with status {response.status}: "
+                    f"{body}"
+                )
 
         except AuthError:
             raise
@@ -293,6 +451,16 @@ class DazeAuthClient:
             raise AuthError(
                 f"Network error during token refresh: {detail}"
             ) from err
+
+        # Cognito refused the refresh token. With an email address and
+        # a password stored this is no longer the user's problem: sign
+        # in again, outside the request that has just been answered.
+        self._refresh_refused = True
+
+        if not self.has_credentials:
+            raise refusal
+
+        return await self._async_login_after_refusal(session, refusal)
 
     async def async_validate_tokens(
         self, session: ClientSession

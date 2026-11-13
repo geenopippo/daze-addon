@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
@@ -24,9 +24,11 @@ from .const import (
     BACKGROUND_RETRY_DELAYS,
     CONF_ACCESS_TOKEN,
     CONF_NETWORK_UID,
+    CONF_PASSWORD,
     CONF_POLL_INTERVAL,
     CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
+    CONF_USERNAME,
     DEFAULT_POLL_INTERVAL,
     DOMAIN,
     MAX_POLL_INTERVAL,
@@ -737,7 +739,33 @@ async def async_setup_coordinator(
     network_uid = entry.data[CONF_NETWORK_UID]
 
     session = async_get_clientsession(hass)
-    auth_client = DazeAuthClient(access_token, refresh_token)
+
+    @callback
+    def _store_tokens(tokens: dict[str, Any]) -> None:
+        """Write a new refresh token back to the entry.
+
+        The tokens in the entry used to be the ones entered at setup
+        for good, so a restart always began from those. Once the auth
+        client has signed in again by itself, or Cognito has rotated
+        the refresh token, the stored one is dead: without this the
+        next restart would start from it.
+        """
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_ACCESS_TOKEN: tokens["access_token"],
+                CONF_REFRESH_TOKEN: tokens["refresh_token"],
+            },
+        )
+
+    auth_client = DazeAuthClient(
+        access_token,
+        refresh_token,
+        username=entry.data.get(CONF_USERNAME),
+        password=entry.data.get(CONF_PASSWORD),
+        on_tokens=_store_tokens,
+    )
     api_client = DazeApiClient(auth_client, session)
 
     coordinator = DazeDataUpdateCoordinator(

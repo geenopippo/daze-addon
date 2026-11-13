@@ -12,17 +12,20 @@ from homeassistant.helpers import device_registry as dr
 
 from .api import ApiAuthError, ApiError
 from .const import (
+    CONF_ACCESS_TOKEN,
     CONF_DEVICE_PROFILE,
     CONF_EVSE_NAME,
     CONF_FIRMWARE_VERSION,
     CONF_GRID_POWER_SENSOR,
     CONF_NETWORK_UID,
+    CONF_REFRESH_TOKEN,
     CONF_SERIAL_NUMBER,
     CONF_SOFTWARE_VERSION,
     CONF_SOLAR_MIN_RUN,
     CONF_SOLAR_RESERVE,
     CONF_SOLAR_STOP_DELAY,
     CONF_SUPPLY_PHASES,
+    CONF_TOKEN_EXPIRY,
     DEFAULT_SOLAR_MIN_RUN,
     DEFAULT_SOLAR_RESERVE,
     DEFAULT_SOLAR_STOP_DELAY,
@@ -207,20 +210,37 @@ def _reload_signature(entry: ConfigEntry) -> tuple[Any, Any]:
     those entities writes to the options on each step of its slider,
     treating them as reload triggers would tear the integration down
     and back up repeatedly while the user drags. Everything else —
-    credentials, the poll interval, the signed grid-power sensor and
+    the account, the poll interval, the signed grid-power sensor and
     supply phases the controller is constructed with — is.
+
+    The tokens are absent too. The running auth client writes a new
+    refresh token back to the entry when it has signed in again by
+    itself: it already holds that token, and a reload at that moment
+    would tear down the coordinator in the middle of the request that
+    obtained it. The flows that replace the tokens by hand reload the
+    entry themselves.
     """
     live_applied = (
         CONF_SOLAR_RESERVE,
         CONF_SOLAR_STOP_DELAY,
         CONF_SOLAR_MIN_RUN,
     )
+    held_by_the_auth_client = (
+        CONF_ACCESS_TOKEN,
+        CONF_REFRESH_TOKEN,
+        CONF_TOKEN_EXPIRY,
+    )
     options = {
         key: value
         for key, value in entry.options.items()
         if key not in live_applied
     }
-    return (dict(entry.data), options)
+    data = {
+        key: value
+        for key, value in entry.data.items()
+        if key not in held_by_the_auth_client
+    }
+    return (data, options)
 
 
 async def _async_update_listener(
